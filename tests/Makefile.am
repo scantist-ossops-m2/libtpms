@@ -29,7 +29,6 @@ check_PROGRAMS += \
 	tpm2_selftest
 
 TESTS += \
-	fuzz.sh \
 	nvram_offsets \
 	tpm2_createprimary.sh \
 	tpm2_cve-2023-1017.sh \
