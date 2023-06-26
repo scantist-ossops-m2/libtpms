@@ -73,7 +73,7 @@ static const struct RuntimeProfileDesc {
      * This basically locks the name of the profile to the stateFormatLevel.
      */
     unsigned int stateFormatLevel;
-#define STATE_FORMAT_LEVEL_CURRENT 3
+#define STATE_FORMAT_LEVEL_CURRENT 4
 #define STATE_FORMAT_LEVEL_UNKNOWN 0 /* JSON didn't provide StateFormatLevel; this is only
                                         allowed for the 'default' profile or when user
                                         passed JSON via SetProfile() */
@@ -83,6 +83,7 @@ static const struct RuntimeProfileDesc {
  *  3 : Enabled ECC_Encrypt (0x199) & ECC_Decrypt (0x19a) along with disabling COMPRESSED_LIST.
  *      PERSISTENT_DATA.ppList and PERSISTENT_DATA.auditCommands became bigger and need to
  *      be written differently.
+ *  4 : Camellia-192 & AES-192 enabled
  */
     const char *description;
 #define DESCRIPTION_MAX_SIZE        250
@@ -793,7 +794,7 @@ RuntimeProfileGetSeedCompatLevel(void)
     switch (g_RuntimeProfile.stateFormatLevel) {
     case 1: /* profile runs on v0.9 */
 	return SEED_COMPAT_LEVEL_LAST;
-    case 2 ... 3: /* profile runs on v0.10 */
+    case 2 ... 4: /* profile runs on v0.10 */
 	return SEED_COMPAT_LEVEL_LAST;
     default:
 	FAIL(FATAL_ERROR_INTERNAL);
