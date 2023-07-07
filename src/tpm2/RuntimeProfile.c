@@ -66,6 +66,7 @@ static const struct RuntimeProfileDesc {
     const char *name;
     const char *commandsProfile;
     const char *algorithmsProfile;
+    const char *attributesProfile;
     /* StateFormatLevel drives the format the TPM's state is written in and
      * how it is read.
      * Once a version of libtpms is released this field must never change afterwards
@@ -73,7 +74,7 @@ static const struct RuntimeProfileDesc {
      * This basically locks the name of the profile to the stateFormatLevel.
      */
     unsigned int stateFormatLevel;
-#define STATE_FORMAT_LEVEL_CURRENT 4
+#define STATE_FORMAT_LEVEL_CURRENT 5
 #define STATE_FORMAT_LEVEL_UNKNOWN 0 /* JSON didn't provide StateFormatLevel; this is only
                                         allowed for the 'default' profile or when user
                                         passed JSON via SetProfile() */
@@ -84,6 +85,7 @@ static const struct RuntimeProfileDesc {
  *      PERSISTENT_DATA.ppList and PERSISTENT_DATA.auditCommands became bigger and need to
  *      be written differently.
  *  4 : Camellia-192 & AES-192 enabled
+ *  5 : Attribute fips-host was added
  */
     const char *description;
 #define DESCRIPTION_MAX_SIZE        250
@@ -145,6 +147,7 @@ RuntimeProfileInit(
 {
     RuntimeAlgorithmInit(&RuntimeProfile->RuntimeAlgorithm);
     RuntimeCommandsInit(&RuntimeProfile->RuntimeCommands);
+    RuntimeAttributesInit(&RuntimeProfile->RuntimeAttributes);
 
     RuntimeProfile->profileName = NULL;
     RuntimeProfile->runtimeProfileJSON = NULL;
@@ -161,6 +164,7 @@ RuntimeProfileFree(
 {
     RuntimeAlgorithmFree(&RuntimeProfile->RuntimeAlgorithm);
     RuntimeCommandsFree(&RuntimeProfile->RuntimeCommands);
+    RuntimeAttributesFree(&RuntimeProfile->RuntimeAttributes);
 
     free(RuntimeProfile->profileName);
     RuntimeProfile->profileName = NULL;
@@ -178,11 +182,17 @@ RuntimeProfileSetRuntimeProfile(
 				const struct RuntimeProfileDesc *rp,
 				const char                      *algorithmsProfile,
 				const char                      *commandsProfile,
+				const char                      *attributesProfile,
 				unsigned int                    *stateFormatLevel,	// IN/OUT: required stateFormatLevel
 				unsigned int                    maxStateFormatLevel	// IN: maximum allowed stateFormatLevel
 				)
 {
     TPM_RC retVal;
+
+    retVal = RuntimeAttributesSetProfile(&RuntimeProfile->RuntimeAttributes, attributesProfile,
+					 stateFormatLevel, maxStateFormatLevel);
+    if (retVal != TPM_RC_SUCCESS)
+	return retVal;
 
     retVal = RuntimeAlgorithmSetProfile(&RuntimeProfile->RuntimeAlgorithm, algorithmsProfile,
 					stateFormatLevel, maxStateFormatLevel);
@@ -335,6 +345,23 @@ GetAlgorithmsProfileFromJSON(
 }
 
 static TPM_RC
+GetAttributesProfileFromJSON(
+			     const char  *json,
+			     char       **attributesProfile
+			     )
+{
+    const char *regex = "^\\{.*[[:space:]]*\"Attributes\"[[:space:]]*:[[:space:]]*\"([^\"]+)\".*\\}$";
+    TPM_RC retVal;
+
+    retVal = RuntimeProfileGetFromJSON(json, regex, attributesProfile);
+    if (retVal == TPM_RC_NO_RESULT) {
+	*attributesProfile = NULL;
+	retVal = 0;
+    }
+    return retVal;
+}
+
+static TPM_RC
 GetCommandsProfileFromJSON(
 			   const char  *json,
 			   char       **commandsProfile
@@ -359,6 +386,7 @@ GetParametersFromJSON(
 		      unsigned int  *stateFormatLevel,
 		      char         **algorithmsProfile,
 		      char         **commandsProfile,
+		      char         **attributesProfile,
 		      char         **profileDescription
 		      )
 {
@@ -416,11 +444,18 @@ GetParametersFromJSON(
     if (retVal != TPM_RC_SUCCESS)
 	goto err_free_algorithmsprofile;
 
-    retVal = RuntimeProfileGetDescriptionFromJSON(jsonProfile, profileDescription);
+    retVal = GetAttributesProfileFromJSON(jsonProfile, attributesProfile);
     if (retVal != TPM_RC_SUCCESS)
 	goto err_free_commandsprofile;
 
+    retVal = RuntimeProfileGetDescriptionFromJSON(jsonProfile, profileDescription);
+    if (retVal != TPM_RC_SUCCESS)
+	goto err_free_attributesprofile;
+
     return TPM_RC_SUCCESS;
+
+err_free_attributesprofile:
+    free(*attributesProfile);
 
 err_free_commandsprofile:
     free(*commandsProfile);
@@ -441,6 +476,7 @@ RuntimeProfileFormat(
 		     unsigned int    stateFormatLevel,
 		     const char     *algorithmsProfile,
 		     const char     *commandsProfile,
+		     const char     *attributesProfile,
 		     const char     *profileDescription
 		     )
 {
@@ -466,6 +502,14 @@ RuntimeProfileFormat(
     }
     if (algorithmsProfile) {
 	n = asprintf(&nret, "%s,\"Algorithms\":\"%s\"", ret, algorithmsProfile);
+	free(ret);
+	if (n < 0)
+	    return TPM_RC_MEMORY;
+
+	ret = nret;
+    }
+    if (attributesProfile) {
+	n = asprintf(&nret, "%s,\"Attributes\":\"%s\"", ret, attributesProfile);
 	free(ret);
 	if (n < 0)
 	    return TPM_RC_MEMORY;
@@ -506,6 +550,7 @@ RuntimeProfileFormatJSON(
 				  RuntimeProfile->stateFormatLevel,
 				  RuntimeProfile->RuntimeAlgorithm.algorithmProfile,
 				  RuntimeProfile->RuntimeCommands.commandsProfile,
+				  RuntimeProfile->RuntimeAttributes.attributesProfile,
 				  RuntimeProfile->profileDescription);
     if (retVal != TPM_RC_SUCCESS)
 	return retVal;
@@ -523,6 +568,7 @@ RuntimeProfileFindByName(
 			 unsigned int    stateFormatLevel,
 			 const char     *commandsProfile,
 			 const char     *algorithmsProfile,
+			 const char     *attributesProfile,
 			 const char     *profileDescription
 			)
 {
@@ -537,7 +583,7 @@ RuntimeProfileFindByName(
 		/* user cannot set command or algorithms profile */
 		if (jsonProfileIsFromUser &&
 		    (stateFormatLevel != STATE_FORMAT_LEVEL_UNKNOWN ||
-		     commandsProfile || algorithmsProfile || profileDescription)) {
+		     commandsProfile || algorithmsProfile || attributesProfile || profileDescription)) {
 		    TPMLIB_LogTPM2Error("The '%s' profile does not allow any customization\n",
 					rp->name);
 	            return NULL;
@@ -572,6 +618,7 @@ RuntimeProfileSet(
     char *runtimeProfileJSON = NULL;
     char *profileDescription = NULL;
     char *algorithmsProfile = NULL;
+    char *attributesProfile = NULL;
     char *commandsProfile = NULL;
     char *profileName = NULL;
     TPM_RC retVal;
@@ -579,6 +626,7 @@ RuntimeProfileSet(
     retVal = GetParametersFromJSON(jsonProfile, jsonProfileIsFromUser,
 				   &profileName, &stateFormatLevelJSON,
 				   &algorithmsProfile, &commandsProfile,
+				   &attributesProfile,
 				   &profileDescription);
     if (retVal != TPM_RC_SUCCESS)
 	return retVal;
@@ -589,6 +637,7 @@ RuntimeProfileSet(
 				  stateFormatLevelJSON,
 				  commandsProfile,
 				  algorithmsProfile,
+				  attributesProfile,
 				  profileDescription);
     if (!rp) {
         retVal = TPM_RC_FAILURE;
@@ -596,6 +645,10 @@ RuntimeProfileSet(
     }
 
     retVal = TPM_RC_MEMORY;
+    if (!attributesProfile && rp->attributesProfile) {
+	if (!(attributesProfile = strdup(rp->attributesProfile)))
+	    goto error;
+    }
     if (!algorithmsProfile && rp->algorithmsProfile) {
 	if (!(algorithmsProfile = strdup(rp->algorithmsProfile)))
 	    goto error;
@@ -628,6 +681,7 @@ RuntimeProfileSet(
     retVal = RuntimeProfileSetRuntimeProfile(RuntimeProfile, rp,
 					     algorithmsProfile,
 					     commandsProfile,
+					     attributesProfile,
 					     &RuntimeProfile->stateFormatLevel,
 					     maxStateFormatLevel);
     if (retVal != TPM_RC_SUCCESS)
@@ -636,7 +690,7 @@ RuntimeProfileSet(
 
     retVal = RuntimeProfileFormat(&runtimeProfileJSON, profileName,
 				  RuntimeProfile->stateFormatLevel, algorithmsProfile,
-				  commandsProfile, profileDescription);
+				  commandsProfile, attributesProfile, profileDescription);
     if (retVal != TPM_RC_SUCCESS)
 	goto error;
 
@@ -650,6 +704,9 @@ RuntimeProfileSet(
 
     free(RuntimeProfile->RuntimeCommands.commandsProfile);
     RuntimeProfile->RuntimeCommands.commandsProfile = commandsProfile;
+
+    free(RuntimeProfile->RuntimeAttributes.attributesProfile);
+    RuntimeProfile->RuntimeAttributes.attributesProfile = attributesProfile;
 
     free(RuntimeProfile->profileName);
     RuntimeProfile->profileName = profileName;
@@ -669,6 +726,7 @@ RuntimeProfileSet(
 
 error:
     free(profileDescription);
+    free(attributesProfile);
     free(commandsProfile);
     free(algorithmsProfile);
     free(profileName);
@@ -697,6 +755,7 @@ RuntimeProfileTest(
     unsigned int maxStateFormatLevel = ~0;
     char *profileDescription = NULL;
     char *algorithmsProfile = NULL;
+    char *attributesProfile = NULL;
     char *commandsProfile = NULL;
     char *profileName = NULL;
     char *oldProfile = NULL;
@@ -705,6 +764,7 @@ RuntimeProfileTest(
     retVal = GetParametersFromJSON(jsonProfile, jsonProfileIsFromUser,
 				   &profileName, &stateFormatLevelJSON,
 				   &algorithmsProfile, &commandsProfile,
+				   &attributesProfile,
 				   &profileDescription);
     if (retVal != TPM_RC_SUCCESS)
 	return retVal;
@@ -714,6 +774,7 @@ RuntimeProfileTest(
 				  stateFormatLevelJSON,
 				  commandsProfile,
 				  algorithmsProfile,
+				  attributesProfile,
 				  profileDescription);
     if (!rp) {
 	retVal = TPM_RC_FAILURE;
@@ -722,6 +783,17 @@ RuntimeProfileTest(
 
     if (stateFormatLevelJSON != STATE_FORMAT_LEVEL_UNKNOWN)
         maxStateFormatLevel = stateFormatLevelJSON;
+
+    if (attributesProfile) {
+	/* Test the attributes profile if one was given */
+	retVal = RuntimeAttributesSwitchProfile(&RuntimeProfile->RuntimeAttributes,
+                                                attributesProfile, maxStateFormatLevel,
+                                                &oldProfile);
+	if (retVal == TPM_RC_SUCCESS)
+	    retVal = RuntimeAttributesSetProfile(&RuntimeProfile->RuntimeAttributes,
+						 oldProfile, &stateFormatLevel,
+						 ~0);
+    }
 
     if (algorithmsProfile) {
 	/* Test the algorithms profile if one was given */
@@ -747,6 +819,7 @@ RuntimeProfileTest(
 
 error:
     free(profileDescription);
+    free(attributesProfile);
     free(commandsProfile);
     free(algorithmsProfile);
     free(profileName);
@@ -775,6 +848,7 @@ RuntimeProfileGetByIndex(
 				RuntimeProfileDescs[idx].stateFormatLevel,
 				RuntimeProfileDescs[idx].algorithmsProfile,
 				RuntimeProfileDescs[idx].commandsProfile,
+				RuntimeProfileDescs[idx].attributesProfile,
 				RuntimeProfileDescs[idx].description);
 }
 
@@ -794,7 +868,7 @@ RuntimeProfileGetSeedCompatLevel(void)
     switch (g_RuntimeProfile.stateFormatLevel) {
     case 1: /* profile runs on v0.9 */
 	return SEED_COMPAT_LEVEL_LAST;
-    case 2 ... 4: /* profile runs on v0.10 */
+    case 2 ... 5: /* profile runs on v0.10 */
 	return SEED_COMPAT_LEVEL_LAST;
     default:
 	FAIL(FATAL_ERROR_INTERNAL);
