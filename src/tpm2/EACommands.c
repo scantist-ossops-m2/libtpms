@@ -1029,7 +1029,7 @@ TPM2_PolicyCpHash(PolicyCpHash_In* in  // IN: input parameter list
 
     // error if the cpHash in session context is not empty and is not the same
     // as the input or is not a cpHash
-    if((session->u1.cpHash.t.size != 0)
+    if((IsCpHashUnionOccupied(session->attributes))
        && (!session->attributes.isCpHashDefined
 	   || !MemoryEqual2B(&in->cpHashA.b, &session->u1.cpHash.b)))
 	return TPM_RC_CPHASH;
@@ -1092,11 +1092,9 @@ TPM2_PolicyNameHash(PolicyNameHash_In* in  // IN: input parameter list
     // is always non-zero.
     if(in->nameHash.t.size != CryptHashGetDigestSize(session->authHashAlg))
 	return TPM_RCS_SIZE + RC_PolicyNameHash_nameHash;
-    // u1 in the policy session context cannot otherwise be occupied
-    if(session->u1.cpHash.b.size != 0
-       || session->attributes.isBound
-       || session->attributes.isCpHashDefined
-       || session->attributes.isTemplateSet)
+
+    // error if the nameHash in session context is not empty
+    if(IsCpHashUnionOccupied(session->attributes))
 	return TPM_RC_CPHASH;
 
     // Internal Data Update
@@ -1498,14 +1496,12 @@ TPM2_PolicyTemplate(PolicyTemplate_In* in  // IN: input parameter list
 
     // Get pointer to the session structure
     session = SessionGet(in->policySession);
-    // If the template is set, make sure that it is the same as the input value
-    if(session->attributes.isTemplateSet)
-	{
-	    if(!MemoryEqual2B(&in->templateHash.b, &session->u1.cpHash.b))
-		return TPM_RCS_VALUE + RC_PolicyTemplate_templateHash;
-	}
-    // error if cpHash contains something that is not a template
-    else if(session->u1.templateHash.t.size != 0)
+
+    // error if the templateHash in session context is not empty and is not the
+    // same as the input or is not a template
+    if((IsCpHashUnionOccupied(session->attributes))
+       && (!session->attributes.isTemplateHashDefined
+	   || !MemoryEqual2B(&in->templateHash.b, &session->u1.templateHash.b)))
 	return TPM_RC_CPHASH;
 
     // A valid templateHash must have the same size as session hash digest
@@ -1530,9 +1526,11 @@ TPM2_PolicyTemplate(PolicyTemplate_In* in  // IN: input parameter list
 
     //  complete the digest and get the results
     CryptHashEnd2B(&hashState, &session->u2.policyDigest.b);
-    // update cpHash in session context
-    session->u1.templateHash = in->templateHash;
-    session->attributes.isTemplateSet = SET;
+
+    // update templateHash in session context
+    session->u1.templateHash                  = in->templateHash;
+    session->attributes.isTemplateHashDefined = SET;
+
     return TPM_RC_SUCCESS;
 }
 
