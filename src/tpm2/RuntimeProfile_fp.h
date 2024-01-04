@@ -102,4 +102,6 @@ RuntimeProfileGetByIndex(
 			 char    **runtimeProfileJSON
 			 );
 
+SEED_COMPAT_LEVEL RuntimeProfileGetSeedCompatLevel(void);
+
 #endif /* RUNTIME_PROFILE_H */
